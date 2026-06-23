@@ -49,7 +49,8 @@ function broadcastBotList() {
 function broadcastWorkerList() {
     const workers = Array.from(workerBots.values()).map(s => ({
         id: s.id,
-        bots: s.confirmed.length + s.pending.length
+        bots: s.confirmed.length + s.pending.length,
+        names: s.confirmed
     }))
     broadcastToPanel(JSON.stringify({ type: "workerList", workers }))
 }
@@ -81,7 +82,8 @@ wss.on("connection", (ws) => {
                     type: "workerList",
                     workers: Array.from(workerBots.values()).map(s => ({
                         id: s.id,
-                        bots: s.confirmed.length + s.pending.length
+                        bots: s.confirmed.length + s.pending.length,
+                        names: s.confirmed
                     }))
                 }))
             }
