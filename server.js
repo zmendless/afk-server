@@ -10,10 +10,10 @@ const MAX_BOTS_PER_WORKER = 3
 
 app.use(express.static("public"))
 
-// Map<ws, { id, bots[] }> — worker state
+// Map<ws, { id, confirmed: string[], pending: string[] }>
 const workerBots = new Map()
 
-// Map<string, ws> — which worker owns each bot username
+// Map<string, ws>
 const botWorker = new Map()
 
 let workerIdCounter = 1
@@ -23,27 +23,14 @@ function getAvailableWorker() {
     let fewest = MAX_BOTS_PER_WORKER
 
     for (const [worker, state] of workerBots.entries()) {
-        if (worker.readyState === WebSocket.OPEN && state.bots.length < fewest) {
+        const total = state.confirmed.length + state.pending.length
+        if (worker.readyState === WebSocket.OPEN && total < fewest) {
             best = worker
-            fewest = state.bots.length
+            fewest = total
         }
     }
 
     return best
-}
-
-function broadcastBotList() {
-    const bots = Array.from(botWorker.keys())
-    const msg = JSON.stringify({ type: "botList", bots })
-    broadcastToPanel(msg)
-}
-
-function broadcastWorkerList() {
-    const workers = Array.from(workerBots.values()).map(state => ({
-        id: state.id,
-        bots: state.bots
-    }))
-    broadcastToPanel(JSON.stringify({ type: "workerList", workers }))
 }
 
 function broadcastToPanel(msg) {
@@ -52,6 +39,19 @@ function broadcastToPanel(msg) {
             client.send(msg)
         }
     })
+}
+
+function broadcastBotList() {
+    const bots = Array.from(botWorker.keys())
+    broadcastToPanel(JSON.stringify({ type: "botList", bots }))
+}
+
+function broadcastWorkerList() {
+    const workers = Array.from(workerBots.values()).map(s => ({
+        id: s.id,
+        bots: s.confirmed.length + s.pending.length
+    }))
+    broadcastToPanel(JSON.stringify({ type: "workerList", workers }))
 }
 
 function sendToWorker(worker, payload) {
@@ -71,7 +71,7 @@ wss.on("connection", (ws) => {
             if (data.role === "bot-worker") {
                 ws.role = "worker"
                 ws.workerId = workerIdCounter++
-                workerBots.set(ws, { id: ws.workerId, bots: [] })
+                workerBots.set(ws, { id: ws.workerId, confirmed: [], pending: [] })
                 console.log(`worker #${ws.workerId} connected, total: ${workerBots.size}`)
                 broadcastWorkerList()
             } else if (data.role === "panel") {
@@ -79,26 +79,48 @@ wss.on("connection", (ws) => {
                 ws.send(JSON.stringify({ type: "botList", bots: Array.from(botWorker.keys()) }))
                 ws.send(JSON.stringify({
                     type: "workerList",
-                    workers: Array.from(workerBots.values()).map(s => ({ id: s.id, bots: s.bots }))
+                    workers: Array.from(workerBots.values()).map(s => ({
+                        id: s.id,
+                        bots: s.confirmed.length + s.pending.length
+                    }))
                 }))
             }
             return
         }
 
-        // --- Worker reporting its current bot list ---
+        // --- Worker reporting its bot list ---
         if (ws.role === "worker" && data.type === "botList") {
             const state = workerBots.get(ws)
-            const previousBots = state ? state.bots : []
-            const newBots = data.bots
+            if (!state) return
 
-            for (const username of previousBots) {
-                if (!newBots.includes(username)) botWorker.delete(username)
-            }
-            for (const username of newBots) {
-                botWorker.set(username, ws)
+            const reportedBots = data.bots
+
+            // Move pending → confirmed if worker now has them
+            state.pending = state.pending.filter(username => {
+                if (reportedBots.includes(username)) {
+                    state.confirmed.push(username)
+                    return false // remove from pending
+                }
+                return true // keep in pending, not spawned yet
+            })
+
+            // Remove confirmed bots the worker no longer has
+            state.confirmed = state.confirmed.filter(username => {
+                if (!reportedBots.includes(username)) {
+                    botWorker.delete(username)
+                    return false
+                }
+                return true
+            })
+
+            // Add any bots the worker has that we don't know about (e.g. after reassignment)
+            for (const username of reportedBots) {
+                if (!state.confirmed.includes(username) && !state.pending.includes(username)) {
+                    state.confirmed.push(username)
+                    botWorker.set(username, ws)
+                }
             }
 
-            if (state) state.bots = newBots
             broadcastBotList()
             broadcastWorkerList()
             return
@@ -108,25 +130,25 @@ wss.on("connection", (ws) => {
         if (data.type === "command") {
             const cmd = data.payload
 
-        if (cmd.type === "createBot") {
-            const worker = getAvailableWorker()
-            if (!worker) {
-                console.log("all workers at capacity, rejecting createBot for:", cmd.username)
+            if (cmd.type === "createBot") {
+                const worker = getAvailableWorker()
+                if (!worker) {
+                    console.log("all workers at capacity, rejecting createBot for:", cmd.username)
+                    return
+                }
+                const state = workerBots.get(worker)
+                state.pending.push(cmd.username)
+                botWorker.set(cmd.username, worker)
+                sendToWorker(worker, cmd)
+                broadcastWorkerList()
                 return
             }
-            // Optimistically reserve the slot so rapid requests don't over-fill
-            const state = workerBots.get(worker)
-            state.bots.push(cmd.username)
-            botWorker.set(cmd.username, worker)
-            sendToWorker(worker, cmd)
-            broadcastWorkerList()
-            return
-        }
 
             if (cmd.type === "deleteBot") {
                 if (cmd.username === "__all__") {
                     for (const [worker, state] of workerBots.entries()) {
-                        for (const username of [...state.bots]) {
+                        const all = [...state.confirmed, ...state.pending]
+                        for (const username of all) {
                             sendToWorker(worker, { type: "deleteBot", username })
                         }
                     }
@@ -164,28 +186,31 @@ wss.on("connection", (ws) => {
 
     ws.on("close", () => {
         if (ws.role !== "worker") return
-    
+
         const state = workerBots.get(ws)
-        const lostBots = state ? state.bots : []
+        const lostBots = state ? [...state.confirmed, ...state.pending] : []
         workerBots.delete(ws)
-    
+
         console.log(`worker #${ws.workerId} disconnected, lost bots: [${lostBots.join(", ")}]`)
-    
+
         for (const username of lostBots) botWorker.delete(username)
-    
+
         for (const username of lostBots) {
             const worker = getAvailableWorker()
             if (!worker) {
                 console.log(`no available worker to reassign bot: ${username}`)
                 continue
             }
+            const workerState = workerBots.get(worker)
+            workerState.pending.push(username)
+            botWorker.set(username, worker)
             sendToWorker(worker, { type: "createBot", username })
         }
-    
+
         broadcastBotList()
         broadcastWorkerList()
     })
 })
 
 const PORT = process.env.PORT || 3000
-server.listen(PORT, () => console.log(`http://localhost:${PORT}`))
+server.listen(PORT, () => console.log(`listening on port ${PORT}`))
