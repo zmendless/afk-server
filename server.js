@@ -148,21 +148,6 @@ wss.on("connection", (ws) => {
                 sendToWorker(worker, cmd)
                 broadcastWorkerList()
                 console.log(`[Worker #${worker.workerId}] assigned bot: ${cmd.username} (pending)`)
-
-                // Expire pending after 60s if worker never confirms
-                setTimeout(() => {
-                    const s = workerBots.get(worker)
-                    if (!s) return
-                    const idx = s.pending.indexOf(cmd.username)
-                    if (idx !== -1) {
-                        console.log(`[!] Pending bot ${cmd.username} never confirmed after 60s, expiring`)
-                        s.pending.splice(idx, 1)
-                        botWorker.delete(cmd.username)
-                        broadcastWorkerList()
-                        broadcastBotList()
-                    }
-                }, 60000)
-
                 return
             }
 
