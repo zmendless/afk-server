@@ -159,15 +159,15 @@ wss.on("connection", (ws) => {
 
     ws.on("close", () => {
         if (ws.role !== "worker") return
-
+    
         const state = workerBots.get(ws)
         const lostBots = state ? state.bots : []
         workerBots.delete(ws)
-
+    
         console.log(`worker #${ws.workerId} disconnected, lost bots: [${lostBots.join(", ")}]`)
-
+    
         for (const username of lostBots) botWorker.delete(username)
-
+    
         for (const username of lostBots) {
             const worker = getAvailableWorker()
             if (!worker) {
@@ -175,11 +175,8 @@ wss.on("connection", (ws) => {
                 continue
             }
             sendToWorker(worker, { type: "createBot", username })
-            const workerState = workerBots.get(worker)
-            workerState.bots.push(username)
-            botWorker.set(username, worker)
         }
-
+    
         broadcastBotList()
         broadcastWorkerList()
     })
