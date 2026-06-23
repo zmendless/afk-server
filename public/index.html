@@ -62,6 +62,13 @@
     display: inline-block;
     margin-right: 6px;
   }
+  .worker-names {
+    font-size: 12px;
+    color: #aaa;
+    margin-top: 2px;
+    margin-left: 14px;
+  }
+  
   #noWorkers { font-size: 14px; color: #aaa; }
 </style>
 </head>
@@ -134,7 +141,6 @@ function updateBotList(bots) {
         })
     }
 }
-
 function updateWorkerList(workers) {
     const list = document.getElementById("workerList")
     const empty = document.getElementById("noWorkers")
@@ -148,7 +154,12 @@ function updateWorkerList(workers) {
     empty.style.display = "none"
     list.innerHTML = workers.map(w => `
         <li>
-            <span><span class="worker-dot"></span>Worker #${w.id}</span>
+            <div>
+                <span><span class="worker-dot"></span>Worker #${w.id}</span>
+                ${w.names.length > 0
+                    ? `<div class="worker-names">${w.names.join(", ")}</div>`
+                    : ""}
+            </div>
             <span class="worker-bots">${w.bots}/3 bots</span>
         </li>
     `).join("")
