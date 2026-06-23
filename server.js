@@ -18,15 +18,16 @@ const botWorker = new Map()
 
 let workerIdCounter = 1
 
+// Fill workers to capacity before moving to next (important for per-IP limits)
 function getAvailableWorker() {
     let best = null
-    let fewest = MAX_BOTS_PER_WORKER
+    let most = -1
 
     for (const [worker, state] of workerBots.entries()) {
         const total = state.confirmed.length + state.pending.length
-        if (worker.readyState === WebSocket.OPEN && total < fewest) {
+        if (worker.readyState === WebSocket.OPEN && total < MAX_BOTS_PER_WORKER && total > most) {
             best = worker
-            fewest = total
+            most = total
         }
     }
 
@@ -121,9 +122,16 @@ wss.on("connection", (ws) => {
             // Add any bots the worker has that we don't know about (e.g. after reconnect)
             for (const username of reportedBots) {
                 if (!state.confirmed.includes(username) && !state.pending.includes(username)) {
-                    console.log(`[Worker #${ws.workerId}] ${username} adopted (unknown bot)`)
-                    state.confirmed.push(username)
-                    botWorker.set(username, ws)
+                    // Only adopt if not already owned by another worker
+                    if (!botWorker.has(username)) {
+                        console.log(`[Worker #${ws.workerId}] ${username} adopted`)
+                        state.confirmed.push(username)
+                        botWorker.set(username, ws)
+                    } else {
+                        // Another worker owns this bot — tell this worker to delete it
+                        console.log(`[Worker #${ws.workerId}] ${username} is a duplicate, removing`)
+                        sendToWorker(ws, { type: "deleteBot", username })
+                    }
                 }
             }
 
@@ -137,6 +145,11 @@ wss.on("connection", (ws) => {
             const cmd = data.payload
 
             if (cmd.type === "createBot") {
+                // Reject if bot already exists
+                if (botWorker.has(cmd.username)) {
+                    console.log(`[!] Bot ${cmd.username} already exists, skipping`)
+                    return
+                }
                 const worker = getAvailableWorker()
                 if (!worker) {
                     console.log(`[!] All workers at capacity, rejecting createBot for: ${cmd.username}`)
