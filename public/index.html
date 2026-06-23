@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: sans-serif; background: #f0f0f0; padding: 24px; }
+  h2 { margin-bottom: 20px; }
+
+  .card {
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    max-width: 340px;
+  }
+  .card h3 {
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #888;
+  }
+
+  input, select {
+    display: block;
+    width: 100%;
+    padding: 7px 10px;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px;
+    font-size: 14px;
+    box-sizing: border-box;
+  }
+  input[type="file"] {
+    padding: 5px;
+    background: #fafafa;
+  }
+  button {
+    padding: 7px 16px;
+    border: none;
+    border-radius: 5px;
+    background: #3a3a3a;
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { background: #555; }
+  .batch-status {
+    margin-top: 10px;
+    font-size: 13px;
+    color: #666;
+  }
+</style>
+</head>
+<body>
+
+<h2>Bot Panel</h2>
+
+<div class="card">
+  <h3>Add Bot</h3>
+  <input id="addName" placeholder="Username">
+  <button onclick="spawnBot()">Spawn Bot</button>
+</div>
+
+<div class="card">
+  <h3>Batch Add from .txt</h3>
+  <input type="file" id="batchFile" accept=".txt">
+  <button onclick="spawnBatch()">Spawn All</button>
+  <div class="batch-status" id="batchStatus"></div>
+</div>
+
+<div class="card">
+  <h3>Delete Bot</h3>
+  <select id="deleteName"></select>
+  <button onclick="deleteBot()">Delete Bot</button>
+</div>
+
+<div class="card">
+  <h3>Send Message</h3>
+  <select id="messageUsername"></select>
+  <input id="messageContent" placeholder="Message">
+  <button onclick="sendMessage()">Send Message</button>
+</div>
+
+<div class="card">
+  <h3>Drop All</h3>
+  <select id="dropUsername"></select>
+  <button onclick="dropAll()">Drop All</button>
+</div>
+
+<script>
+const ws = new WebSocket("wss://ordusporafk.up.railway.app")
+
+const selects = {
+    delete: document.getElementById("deleteName"),
+    message: document.getElementById("messageUsername"),
+    drop: document.getElementById("dropUsername")
+}
+
+ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "register", role: "panel" }))
+}
+
+ws.onmessage = (msg) => {
+    const data = JSON.parse(msg.data)
+    if (data.type === "botList") updateBotList(data.bots)
+}
+
+function updateBotList(bots) {
+    for (const select of Object.values(selects)) {
+        select.innerHTML = `<option value="__all__">All Bots</option>`
+        bots.forEach(name => {
+            select.innerHTML += `<option value="${name}">${name}</option>`
+        })
+    }
+}
+
+function send(payload) {
+    ws.send(JSON.stringify({ type: "command", payload }))
+}
+
+function spawnBot() {
+    send({ type: "createBot", username: document.getElementById("addName").value })
+}
+
+async function spawnBatch() {
+    const file = document.getElementById("batchFile").files[0]
+    if (!file) return
+
+    const text = await file.text()
+    const usernames = text.split("\n").map(n => n.trim()).filter(Boolean)
+
+    if (usernames.length === 0) return
+
+    const status = document.getElementById("batchStatus")
+    status.textContent = `Queuing ${usernames.length} bots...`
+
+    // Send all at once — the workers handle the 5s per-worker delay themselves
+    for (const username of usernames) {
+        send({ type: "createBot", username })
+    }
+
+    status.textContent = `Queued ${usernames.length} bots.`
+}
+
+function deleteBot() {
+    send({ type: "deleteBot", username: selects.delete.value })
+}
+
+function sendMessage() {
+    send({ type: "sendMessage", username: selects.message.value, message: document.getElementById("messageContent").value })
+}
+
+function dropAll() {
+    send({ type: "dropAll", username: selects.drop.value })
+}
+</script>
+
+</body>
+</html>
