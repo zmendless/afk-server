@@ -7,26 +7,14 @@ const server = http.createServer(app)
 const wss = new WebSocket.Server({ server })
 
 const MAX_BOTS_PER_WORKER = 3
+const BOT_SEND_DELAY_MS = 3000 // 3 seconds between each bot assignment
 
 app.use(express.static("public"))
 
 const workerBots = new Map() // Map<ws, { id, confirmed: string[], pending: string[] }>
 const botWorker = new Map() // Map<string, ws>
 let workerIdCounter = 1
-
-const createQueue = []
-let createTimer = null
-
-function processCreateQueue() {
-    if (createQueue.length === 0) { createTimer = null; return }
-    const batch = createQueue.splice(0, 6)
-    for (const { worker, cmd } of batch) {
-        const state = workerBots.get(worker)
-        if (!state || worker.readyState !== WebSocket.OPEN) continue
-        sendToWorker(worker, cmd)
-    }
-    createTimer = setTimeout(processCreateQueue, 15000)
-}
+let nextSendTime = 0 // timestamp of when the next bot can be sent
 
 function getAvailableWorker() {
     let best = null
@@ -62,6 +50,13 @@ function broadcastWorkerList() {
 
 function sendToWorker(worker, payload) {
     if (worker.readyState === WebSocket.OPEN) worker.send(JSON.stringify(payload))
+}
+
+function scheduleSend(worker, cmd) {
+    const now = Date.now()
+    const delay = Math.max(0, nextSendTime - now)
+    nextSendTime = Math.max(now, nextSendTime) + BOT_SEND_DELAY_MS
+    setTimeout(() => sendToWorker(worker, cmd), delay)
 }
 
 wss.on("connection", (ws) => {
@@ -127,14 +122,14 @@ wss.on("connection", (ws) => {
                 const state = workerBots.get(worker)
                 state.pending.push(cmd.username)
                 botWorker.set(cmd.username, worker)
-                createQueue.push({ worker, cmd })
-                if (!createTimer) createTimer = setTimeout(processCreateQueue, 0)
+                scheduleSend(worker, cmd)
                 broadcastWorkerList()
                 return
             }
 
             if (cmd.type === "deleteBot") {
                 if (cmd.username === "__all__") {
+                    nextSendTime = 0 // reset stagger on kill all
                     for (const [worker, state] of workerBots.entries()) {
                         for (const u of [...state.confirmed, ...state.pending]) {
                             sendToWorker(worker, { type: "deleteBot", username: u })
@@ -190,8 +185,7 @@ wss.on("connection", (ws) => {
             const s = workerBots.get(worker)
             s.pending.push(u)
             botWorker.set(u, worker)
-            createQueue.push({ worker, cmd: { type: "createBot", username: u } })
-            if (!createTimer) createTimer = setTimeout(processCreateQueue, 0)
+            scheduleSend(worker, { type: "createBot", username: u })
         }
         broadcastBotList()
         broadcastWorkerList()
