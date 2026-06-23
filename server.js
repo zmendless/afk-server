@@ -19,12 +19,17 @@ const botWorker = new Map()
 let workerIdCounter = 1
 
 function getAvailableWorker() {
+    let best = null
+    let fewest = MAX_BOTS_PER_WORKER
+
     for (const [worker, state] of workerBots.entries()) {
-        if (worker.readyState === WebSocket.OPEN && state.bots.length < MAX_BOTS_PER_WORKER) {
-            return worker
+        if (worker.readyState === WebSocket.OPEN && state.bots.length < fewest) {
+            best = worker
+            fewest = state.bots.length
         }
     }
-    return null
+
+    return best
 }
 
 function broadcastBotList() {
