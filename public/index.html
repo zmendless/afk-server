@@ -149,7 +149,7 @@ function updateWorkerList(workers) {
     list.innerHTML = workers.map(w => `
         <li>
             <span><span class="worker-dot"></span>Worker #${w.id}</span>
-            <span class="worker-bots">${w.bots.length}/3 bots</span>
+            <span class="worker-bots">${w.bots}/3 bots</span>
         </li>
     `).join("")
 }
