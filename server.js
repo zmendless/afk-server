@@ -108,15 +108,20 @@ wss.on("connection", (ws) => {
         if (data.type === "command") {
             const cmd = data.payload
 
-            if (cmd.type === "createBot") {
-                const worker = getAvailableWorker()
-                if (!worker) {
-                    console.log("all workers at capacity, rejecting createBot for:", cmd.username)
-                    return
-                }
-                sendToWorker(worker, cmd)
+        if (cmd.type === "createBot") {
+            const worker = getAvailableWorker()
+            if (!worker) {
+                console.log("all workers at capacity, rejecting createBot for:", cmd.username)
                 return
             }
+            // Optimistically reserve the slot so rapid requests don't over-fill
+            const state = workerBots.get(worker)
+            state.bots.push(cmd.username)
+            botWorker.set(cmd.username, worker)
+            sendToWorker(worker, cmd)
+            broadcastWorkerList()
+            return
+        }
 
             if (cmd.type === "deleteBot") {
                 if (cmd.username === "__all__") {
