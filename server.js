@@ -14,6 +14,20 @@ const workerBots = new Map() // Map<ws, { id, confirmed: string[], pending: stri
 const botWorker = new Map() // Map<string, ws>
 let workerIdCounter = 1
 
+const createQueue = []
+let createTimer = null
+
+function processCreateQueue() {
+    if (createQueue.length === 0) { createTimer = null; return }
+    const batch = createQueue.splice(0, 6)
+    for (const { worker, cmd } of batch) {
+        const state = workerBots.get(worker)
+        if (!state || worker.readyState !== WebSocket.OPEN) continue
+        sendToWorker(worker, cmd)
+    }
+    createTimer = setTimeout(processCreateQueue, 15000)
+}
+
 function getAvailableWorker() {
     let best = null
     let most = -1
@@ -77,19 +91,16 @@ wss.on("connection", (ws) => {
 
             const reported = data.bots
 
-            // pending → confirmed
             state.pending = state.pending.filter(u => {
                 if (reported.includes(u)) { state.confirmed.push(u); return false }
                 return true
             })
 
-            // remove lost confirmed bots
             state.confirmed = state.confirmed.filter(u => {
                 if (!reported.includes(u)) { botWorker.delete(u); return false }
                 return true
             })
 
-            // adopt unknown bots or kill duplicates
             for (const u of reported) {
                 if (!state.confirmed.includes(u) && !state.pending.includes(u)) {
                     if (!botWorker.has(u)) {
@@ -116,7 +127,8 @@ wss.on("connection", (ws) => {
                 const state = workerBots.get(worker)
                 state.pending.push(cmd.username)
                 botWorker.set(cmd.username, worker)
-                sendToWorker(worker, cmd)
+                createQueue.push({ worker, cmd })
+                if (!createTimer) createTimer = setTimeout(processCreateQueue, 0)
                 broadcastWorkerList()
                 return
             }
@@ -178,7 +190,8 @@ wss.on("connection", (ws) => {
             const s = workerBots.get(worker)
             s.pending.push(u)
             botWorker.set(u, worker)
-            sendToWorker(worker, { type: "createBot", username: u })
+            createQueue.push({ worker, cmd: { type: "createBot", username: u } })
+            if (!createTimer) createTimer = setTimeout(processCreateQueue, 0)
         }
         broadcastBotList()
         broadcastWorkerList()
