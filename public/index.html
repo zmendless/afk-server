@@ -31,10 +31,7 @@
     font-size: 14px;
     box-sizing: border-box;
   }
-  input[type="file"] {
-    padding: 5px;
-    background: #fafafa;
-  }
+  input[type="file"] { padding: 5px; background: #fafafa; }
   button {
     padding: 7px 16px;
     border: none;
@@ -45,16 +42,38 @@
     cursor: pointer;
   }
   button:hover { background: #555; }
-  .batch-status {
-    margin-top: 10px;
-    font-size: 13px;
-    color: #666;
+  .batch-status { margin-top: 10px; font-size: 13px; color: #666; }
+
+  .worker-list { margin: 0; padding: 0; list-style: none; }
+  .worker-list li {
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
   }
+  .worker-list li:last-child { border-bottom: none; }
+  .worker-bots { color: #888; font-size: 13px; }
+  .worker-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #4caf50;
+    display: inline-block;
+    margin-right: 6px;
+  }
+  #noWorkers { font-size: 14px; color: #aaa; }
 </style>
 </head>
 <body>
 
 <h2>Bot Panel</h2>
+
+<div class="card">
+  <h3>Workers</h3>
+  <p id="noWorkers">No workers connected.</p>
+  <ul class="worker-list" id="workerList"></ul>
+</div>
 
 <div class="card">
   <h3>Add Bot</h3>
@@ -104,6 +123,7 @@ ws.onopen = () => {
 ws.onmessage = (msg) => {
     const data = JSON.parse(msg.data)
     if (data.type === "botList") updateBotList(data.bots)
+    if (data.type === "workerList") updateWorkerList(data.workers)
 }
 
 function updateBotList(bots) {
@@ -113,6 +133,25 @@ function updateBotList(bots) {
             select.innerHTML += `<option value="${name}">${name}</option>`
         })
     }
+}
+
+function updateWorkerList(workers) {
+    const list = document.getElementById("workerList")
+    const empty = document.getElementById("noWorkers")
+
+    if (workers.length === 0) {
+        empty.style.display = "block"
+        list.innerHTML = ""
+        return
+    }
+
+    empty.style.display = "none"
+    list.innerHTML = workers.map(w => `
+        <li>
+            <span><span class="worker-dot"></span>Worker #${w.id}</span>
+            <span class="worker-bots">${w.bots.length}/3 bots</span>
+        </li>
+    `).join("")
 }
 
 function send(payload) {
@@ -129,13 +168,11 @@ async function spawnBatch() {
 
     const text = await file.text()
     const usernames = text.split("\n").map(n => n.trim()).filter(Boolean)
-
     if (usernames.length === 0) return
 
     const status = document.getElementById("batchStatus")
     status.textContent = `Queuing ${usernames.length} bots...`
 
-    // Send all at once — the workers handle the 5s per-worker delay themselves
     for (const username of usernames) {
         send({ type: "createBot", username })
     }
