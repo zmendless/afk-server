@@ -10,15 +10,17 @@ const MAX_BOTS_PER_WORKER = 3
 
 app.use(express.static("public"))
 
-// Map<ws, string[]> which bots each worker owns
+// Map<ws, { id, bots[] }> — worker state
 const workerBots = new Map()
 
-// Map<string, ws> which worker owns each bot username
+// Map<string, ws> — which worker owns each bot username
 const botWorker = new Map()
 
+let workerIdCounter = 1
+
 function getAvailableWorker() {
-    for (const [worker, bots] of workerBots.entries()) {
-        if (worker.readyState === WebSocket.OPEN && bots.length < MAX_BOTS_PER_WORKER) {
+    for (const [worker, state] of workerBots.entries()) {
+        if (worker.readyState === WebSocket.OPEN && state.bots.length < MAX_BOTS_PER_WORKER) {
             return worker
         }
     }
@@ -28,7 +30,18 @@ function getAvailableWorker() {
 function broadcastBotList() {
     const bots = Array.from(botWorker.keys())
     const msg = JSON.stringify({ type: "botList", bots })
+    broadcastToPanel(msg)
+}
 
+function broadcastWorkerList() {
+    const workers = Array.from(workerBots.values()).map(state => ({
+        id: state.id,
+        bots: state.bots
+    }))
+    broadcastToPanel(JSON.stringify({ type: "workerList", workers }))
+}
+
+function broadcastToPanel(msg) {
     wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN && client.role === "panel") {
             client.send(msg)
@@ -52,39 +65,37 @@ wss.on("connection", (ws) => {
         if (data.type === "register") {
             if (data.role === "bot-worker") {
                 ws.role = "worker"
-                workerBots.set(ws, [])
-                console.log("worker connected, total workers:", workerBots.size)
+                ws.workerId = workerIdCounter++
+                workerBots.set(ws, { id: ws.workerId, bots: [] })
+                console.log(`worker #${ws.workerId} connected, total: ${workerBots.size}`)
+                broadcastWorkerList()
             } else if (data.role === "panel") {
                 ws.role = "panel"
-                // Send current bot list to newly connected panel
+                ws.send(JSON.stringify({ type: "botList", bots: Array.from(botWorker.keys()) }))
                 ws.send(JSON.stringify({
-                    type: "botList",
-                    bots: Array.from(botWorker.keys())
+                    type: "workerList",
+                    workers: Array.from(workerBots.values()).map(s => ({ id: s.id, bots: s.bots }))
                 }))
             }
             return
         }
 
         // --- Worker reporting its current bot list ---
-        // Workers send { type: "botList", bots: [...] } after each spawn/delete
         if (ws.role === "worker" && data.type === "botList") {
-            const previousBots = workerBots.get(ws) || []
+            const state = workerBots.get(ws)
+            const previousBots = state ? state.bots : []
             const newBots = data.bots
 
-            // Remove bots this worker no longer has
             for (const username of previousBots) {
-                if (!newBots.includes(username)) {
-                    botWorker.delete(username)
-                }
+                if (!newBots.includes(username)) botWorker.delete(username)
             }
-
-            // Register bots this worker now has
             for (const username of newBots) {
                 botWorker.set(username, ws)
             }
 
-            workerBots.set(ws, newBots)
+            if (state) state.bots = newBots
             broadcastBotList()
+            broadcastWorkerList()
             return
         }
 
@@ -104,15 +115,13 @@ wss.on("connection", (ws) => {
 
             if (cmd.type === "deleteBot") {
                 if (cmd.username === "__all__") {
-                    // Send delete to every worker for every bot they own
-                    for (const [worker, bots] of workerBots.entries()) {
-                        for (const username of [...bots]) {
+                    for (const [worker, state] of workerBots.entries()) {
+                        for (const username of [...state.bots]) {
                             sendToWorker(worker, { type: "deleteBot", username })
                         }
                     }
                     return
                 }
-
                 const worker = botWorker.get(cmd.username)
                 if (!worker) return
                 sendToWorker(worker, cmd)
@@ -121,12 +130,9 @@ wss.on("connection", (ws) => {
 
             if (cmd.type === "sendMessage") {
                 if (cmd.username === "__all__") {
-                    for (const worker of workerBots.keys()) {
-                        sendToWorker(worker, cmd)
-                    }
+                    for (const worker of workerBots.keys()) sendToWorker(worker, cmd)
                     return
                 }
-
                 const worker = botWorker.get(cmd.username)
                 if (!worker) return
                 sendToWorker(worker, cmd)
@@ -135,12 +141,9 @@ wss.on("connection", (ws) => {
 
             if (cmd.type === "dropAll") {
                 if (cmd.username === "__all__") {
-                    for (const worker of workerBots.keys()) {
-                        sendToWorker(worker, cmd)
-                    }
+                    for (const worker of workerBots.keys()) sendToWorker(worker, cmd)
                     return
                 }
-
                 const worker = botWorker.get(cmd.username)
                 if (!worker) return
                 sendToWorker(worker, cmd)
@@ -152,36 +155,30 @@ wss.on("connection", (ws) => {
     ws.on("close", () => {
         if (ws.role !== "worker") return
 
-        const lostBots = workerBots.get(ws) || []
+        const state = workerBots.get(ws)
+        const lostBots = state ? state.bots : []
         workerBots.delete(ws)
 
-        console.log(`worker disconnected, lost bots: [${lostBots.join(", ")}]`)
+        console.log(`worker #${ws.workerId} disconnected, lost bots: [${lostBots.join(", ")}]`)
 
-        // Remove from botWorker map first
-        for (const username of lostBots) {
-            botWorker.delete(username)
-        }
+        for (const username of lostBots) botWorker.delete(username)
 
-        // Reassign lost bots to available workers
         for (const username of lostBots) {
             const worker = getAvailableWorker()
             if (!worker) {
                 console.log(`no available worker to reassign bot: ${username}`)
                 continue
             }
-
             sendToWorker(worker, { type: "createBot", username })
-
-            // Optimistically track the assignment; the worker will confirm via botList
-            const workerList = workerBots.get(worker)
-            workerList.push(username)
+            const workerState = workerBots.get(worker)
+            workerState.bots.push(username)
             botWorker.set(username, worker)
         }
 
         broadcastBotList()
+        broadcastWorkerList()
     })
 })
 
-server.listen(3000, () => {
-    console.log("http://localhost:3000")
-})
+const PORT = process.env.PORT || 3000
+server.listen(PORT, () => console.log(`http://localhost:${PORT}`))
